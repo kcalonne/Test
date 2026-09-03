@@ -1,277 +1,369 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Convertisseur texte-vers-MP3, avec conversion individuelle et par lot."""
+"""
+Convertisseur Texte vers MP3 - Version Streamlit Cloud
+Dé¬°ploiement gratuit sur https://streamlit.io/cloud
+"""
 
 import csv
+import io
 import os
 import re
-import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+import zipfile
+from typing import List, Tuple
 
-try:
-    from gtts import gTTS
-except ImportError:
-    gTTS = None
+import streamlit as st
+from gtts import gTTS
 
-LANGUAGES = {"Français": "fr", "English": "en", "Español": "es"}
+# Configuration de la page
+st.set_page_config(
+    page_title="Convertisseur Texte vers MP3",
+    page_icon="🎙️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Constantes
+LANGUAGES = {"Franç¬°ais": "fr", "English": "en", "Españ¬°¬∞ol": "es"}
 INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
-def safe_filename(name, fallback):
+def safe_filename(name: str, fallback: str) -> str:
+    """Nettoie un nom de fichier pour qu'il soit valide."""
     name = INVALID_FILENAME.sub("_", name.strip())
     name = name.rstrip(". ")
-    return name[:100] or fallback
+    return (name[:100] or fallback).replace(" ", "_").lower()
 
 
-class TTSApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Texte vers MP3 – conversion individuelle et par lot")
-        self.root.geometry("980x700")
-        self.root.minsize(780, 570)
-        self.busy = False
-        self.language = tk.StringVar(value="Français")
-        self.status = tk.StringVar(value="Prêt.")
-        self.progress = tk.DoubleVar(value=0)
-        self._build_ui()
+def parse_batch_entries(text: str) -> Tuple[List[Tuple[str, str]], List[str]]:
+    """Parse les entré¬°es batch et retourne (entré¬°es, erreurs)."""
+    entries, errors = [], []
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        if "|" not in line:
+            errors.append(f"Ligne {number} : séparateur « | » manquant")
+            continue
+        parts = line.split("|", 1)
+        if len(parts) != 2:
+            errors.append(f"Ligne {number} : format invalide")
+            continue
+        name, text_content = parts[0].strip(), parts[1].strip()
+        if not text_content:
+            errors.append(f"Ligne {number} : texte manquant")
+            continue
+        entries.append((safe_filename(name, f"fichier_{number}"), text_content))
+    return entries, errors
 
-    def _build_ui(self):
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Title.TLabel", font=("Segoe UI", 17, "bold"))
-        style.configure("Hint.TLabel", foreground="#555555")
 
-        container = ttk.Frame(self.root, padding=18)
-        container.pack(fill="both", expand=True)
+def convert_text_to_mp3(text: str, language: str) -> bytes:
+    """Convertit un texte en MP3 et retourne les bytes."""
+    tts = gTTS(text=text, lang=language, slow=False)
+    mp3_io = io.BytesIO()
+    tts.write_to_fp(mp3_io)
+    mp3_io.seek(0)
+    return mp3_io.read()
 
-        ttk.Label(container, text="Convertisseur Texte vers MP3", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(
-            container,
-            text="Conversion simple ou traitement d'un lot de textes (un fichier MP3 par ligne).",
-            style="Hint.TLabel",
-        ).pack(anchor="w", pady=(2, 12))
 
-        settings = ttk.Frame(container)
-        settings.pack(fill="x", pady=(0, 10))
-        ttk.Label(settings, text="Langue :").pack(side="left")
-        ttk.Combobox(
-            settings,
-            textvariable=self.language,
-            values=list(LANGUAGES),
-            state="readonly",
-            width=18,
-        ).pack(side="left", padx=(7, 0))
-        ttk.Label(
-            settings,
-            text="La langue choisie est utilisée pour toutes les conversions du lot.",
-            style="Hint.TLabel",
-        ).pack(side="left", padx=14)
-
-        notebook = ttk.Notebook(container)
-        notebook.pack(fill="both", expand=True)
-
-        self.single_tab = ttk.Frame(notebook, padding=12)
-        self.batch_tab = ttk.Frame(notebook, padding=12)
-        notebook.add(self.single_tab, text="Conversion simple")
-        notebook.add(self.batch_tab, text="Conversion par lot")
-
-        self._build_single_tab()
-        self._build_batch_tab()
-
-        footer = ttk.Frame(container)
-        footer.pack(fill="x", pady=(12, 0))
-        ttk.Progressbar(footer, variable=self.progress, maximum=100).pack(fill="x")
-        ttk.Label(footer, textvariable=self.status, style="Hint.TLabel").pack(anchor="w", pady=(5, 0))
-
-    def _build_single_tab(self):
-        ttk.Label(self.single_tab, text="Texte à convertir :").pack(anchor="w")
-        self.single_text = tk.Text(self.single_tab, wrap="word", font=("Segoe UI", 11), height=20)
-        self.single_text.pack(fill="both", expand=True, pady=(6, 10))
-        actions = ttk.Frame(self.single_tab)
-        actions.pack(fill="x")
-        ttk.Button(actions, text="Ouvrir un fichier .txt", command=self.load_single_text).pack(side="left")
-        ttk.Button(actions, text="Effacer", command=lambda: self.single_text.delete("1.0", "end")).pack(side="left", padx=8)
-        self.single_button = ttk.Button(actions, text="Convertir en MP3", command=self.start_single)
-        self.single_button.pack(side="right")
-
-    def _build_batch_tab(self):
-        ttk.Label(
-            self.batch_tab,
-            text="Ajoutez une ligne par fichier : nom du fichier | texte à lire",
-        ).pack(anchor="w")
-        ttk.Label(
-            self.batch_tab,
-            text="Exemple : bonjour | Bonjour à tous !  →  bonjour.mp3",
-            style="Hint.TLabel",
-        ).pack(anchor="w", pady=(2, 6))
-
-        self.batch_text = tk.Text(self.batch_tab, wrap="word", font=("Segoe UI", 11), height=18)
-        self.batch_text.pack(fill="both", expand=True, pady=(0, 10))
-        self.batch_text.insert(
-            "1.0",
-            "fichier_1 | Bonjour, ceci est le premier texte.\n"
-            "fichier_2 | This is the second text.\n"
-            "fichier_3 | Este es el tercer texto.",
-        )
-
-        actions = ttk.Frame(self.batch_tab)
-        actions.pack(fill="x")
-        ttk.Button(actions, text="Importer un CSV", command=self.import_csv).pack(side="left")
-        ttk.Button(actions, text="Charger un exemple", command=self.load_example).pack(side="left", padx=8)
-        ttk.Button(actions, text="Effacer", command=lambda: self.batch_text.delete("1.0", "end")).pack(side="left")
-        self.batch_button = ttk.Button(actions, text="Créer tous les MP3", command=self.start_batch)
-        self.batch_button.pack(side="right")
-
-        ttk.Label(
-            self.batch_tab,
-            text="CSV accepté : deux colonnes nom,texte (avec ou sans ligne d'en-tête).",
-            style="Hint.TLabel",
-        ).pack(anchor="w", pady=(8, 0))
-
-    def load_single_text(self):
-        path = filedialog.askopenfilename(filetypes=[("Fichiers texte", "*.txt"), ("Tous les fichiers", "*.*")])
-        if not path:
-            return
-        try:
-            with open(path, "r", encoding="utf-8") as file:
-                content = file.read()
-            self.single_text.delete("1.0", "end")
-            self.single_text.insert("1.0", content)
-        except OSError as error:
-            messagebox.showerror("Erreur", f"Impossible de lire le fichier.\n{error}")
-
-    def load_example(self):
-        self.batch_text.delete("1.0", "end")
-        self.batch_text.insert(
-            "1.0",
-            "salutation | Bonjour à toutes et à tous.\n"
-            "instructions | Écoutez attentivement puis répétez.\n"
-            "good_morning | Good morning, class!",
-        )
-
-    def import_csv(self):
-        path = filedialog.askopenfilename(filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")])
-        if not path:
-            return
-        try:
-            with open(path, "r", encoding="utf-8-sig", newline="") as file:
-                sample = file.read(2048)
-                file.seek(0)
-                dialect = csv.Sniffer().sniff(sample, delimiters=";,\t")
-                rows = list(csv.reader(file, dialect))
-            if rows and [cell.lower().strip() for cell in rows[0][:2]] in (["nom", "texte"], ["name", "text"]):
-                rows = rows[1:]
-            entries = [f"{row[0]} | {row[1]}" for row in rows if len(row) >= 2 and row[1].strip()]
-            if not entries:
-                raise ValueError("Le CSV ne contient aucune ligne exploitable.")
-            self.batch_text.delete("1.0", "end")
-            self.batch_text.insert("1.0", "\n".join(entries))
-            self.status.set(f"{len(entries)} entrée(s) importée(s).")
-        except Exception as error:
-            messagebox.showerror("Import CSV", f"Impossible d'importer ce fichier.\n{error}")
-
-    def start_single(self):
-        text = self.single_text.get("1.0", "end").strip()
-        if not text:
-            messagebox.showwarning("Texte manquant", "Saisissez un texte avant de lancer la conversion.")
-            return
-        path = filedialog.asksaveasfilename(
-            title="Enregistrer le fichier MP3",
-            defaultextension=".mp3",
-            initialfile="audio.mp3",
-            filetypes=[("Fichier MP3", "*.mp3")],
-        )
-        if path:
-            self.run_background(self.convert_one, text, path, "1/1")
-
-    def start_batch(self):
-        entries, errors = self.parse_batch_entries()
-        if errors:
-            messagebox.showerror("Format du lot", "\n".join(errors[:8]))
-            return
-        if not entries:
-            messagebox.showwarning("Lot vide", "Ajoutez au moins une ligne au format : nom | texte")
-            return
-        folder = filedialog.askdirectory(title="Choisissez le dossier de destination des MP3")
-        if folder:
-            self.run_background(self.convert_batch, entries, folder)
-
-    def parse_batch_entries(self):
-        entries, errors = [], []
-        for number, line in enumerate(self.batch_text.get("1.0", "end").splitlines(), 1):
-            line = line.strip()
-            if not line:
-                continue
-            if "|" not in line:
-                errors.append(f"Ligne {number} : séparateur « | » manquant.")
-                continue
-            name, text = line.split("|", 1)
-            name, text = name.strip(), text.strip()
-            if not text:
-                errors.append(f"Ligne {number} : texte manquant.")
-                continue
-            entries.append((safe_filename(name, f"fichier_{number}"), text))
-        return entries, errors
-
-    def run_background(self, function, *args):
-        if gTTS is None:
-            messagebox.showerror("Dépendance manquante", "Installez gTTS avec la commande :\npip install gTTS")
-            return
-        if self.busy:
-            return
-        self.busy = True
-        self.single_button.configure(state="disabled")
-        self.batch_button.configure(state="disabled")
-        self.progress.set(0)
-        threading.Thread(target=self._worker, args=(function, args), daemon=True).start()
-
-    def _worker(self, function, args):
-        try:
-            function(*args)
-        except Exception as error:
-            self.root.after(0, lambda: messagebox.showerror("Erreur", str(error)))
-            self.root.after(0, lambda: self.status.set("Une erreur est survenue."))
-        finally:
-            self.root.after(0, self.finish)
-
-    def finish(self):
-        self.busy = False
-        self.single_button.configure(state="normal")
-        self.batch_button.configure(state="normal")
-
-    def update_progress(self, value, text):
-        self.root.after(0, lambda: (self.progress.set(value), self.status.set(text)))
-
-    def convert_one(self, text, output_path, label):
-        self.update_progress(10, "Génération du fichier MP3…")
-        gTTS(text=text, lang=LANGUAGES[self.language.get()]).save(output_path)
-        self.update_progress(100, f"Terminé : {os.path.basename(output_path)}")
-        self.root.after(0, lambda: messagebox.showinfo("Conversion terminée", f"Fichier créé :\n{output_path}"))
-
-    def convert_batch(self, entries, folder):
-        language = LANGUAGES[self.language.get()]
-        created, failed = [], []
-        total = len(entries)
-        for index, (name, text) in enumerate(entries, 1):
-            output_path = os.path.join(folder, f"{name}.mp3")
-            self.update_progress((index - 1) * 100 / total, f"Création {index}/{total} : {name}.mp3")
-            try:
-                gTTS(text=text, lang=language).save(output_path)
-                created.append(output_path)
-            except Exception as error:
-                failed.append(f"{name}.mp3 : {error}")
-        self.update_progress(100, f"Lot terminé : {len(created)}/{total} fichier(s) créé(s).")
-        message = f"{len(created)} fichier(s) MP3 créé(s) dans :\n{folder}"
-        if failed:
-            message += "\n\nÉchecs :\n" + "\n".join(failed[:5])
-        self.root.after(0, lambda: messagebox.showinfo("Traitement par lot terminé", message))
+def create_zip_from_mp3s(mp3_files: List[Tuple[str, bytes]]) -> bytes:
+    """Cré¬°e un fichier ZIP contenant plusieurs MP3."""
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for filename, mp3_data in mp3_files:
+            zip_file.writestr(f"{filename}.mp3", mp3_data)
+    zip_buffer.seek(0)
+    return zip_buffer.read()
 
 
 def main():
-    root = tk.Tk()
-    TTSApp(root)
-    root.mainloop()
+    """Application principale Streamlit."""
+
+    # En-t™te
+    st.title("🎙️ Convertisseur Texte vers MP3")
+    st.markdown(
+        """
+        Convertissez vos textes en fichiers audio MP3. 
+        **Conversion simple** ou **par lot** avec t&eacute;l&eacute;chargement.
+        """
+    )
+
+    # Sidebar - S&eacute;lection de la langue
+    with st.sidebar:
+        st.header("⚙️ Param&egrave;tres")
+        selected_language = st.selectbox(
+            "Langue",
+            options=list(LANGUAGES.keys()),
+            index=0,
+            help="La langue choisie est utilis&eacute;e pour toutes les conversions",
+        )
+        st.info(
+            "💡 **Astuce** : gTTS n&eacute;cessite une connexion Internet pour fonctionner."
+        )
+        st.markdown("---")
+        st.markdown(
+            """
+            **Fonctionnalit&eacute;s :**
+            - Conversion texte → MP3
+            - Mode batch (plusieurs fichiers)
+            - Import CSV
+            - T&eacute;l&eacute;chargement ZIP
+            """
+        )
+
+    # Onglets
+    tab1, tab2, tab3 = st.tabs(["📝 Conversion simple", "📦 Conversion par lot", "ℹ️ Aide"])
+
+    # ============================================
+    # ONGLET 1 : CONVERSION SIMPLE
+    # ============================================
+    with tab1:
+        st.header("Conversion d'un seul texte")
+
+        text_input = st.text_area(
+            "Votre texte",
+            height=200,
+            placeholder="Saisissez ou collez votre texte ici...",
+            help="Vous pouvez aussi importer un fichier .txt depuis l'onglet Aide",
+        )
+
+        col1, col2, col3 = st.columns([1, 1, 2])
+
+        with col1:
+            convert_btn = st.button("🔊 Convertir", type="primary", use_container_width=True)
+
+        with col2:
+            if st.button("🗑️ Effacer", use_container_width=True):
+                st.session_state.single_text = ""
+                st.rerun()
+
+        with col3:
+            st.empty()
+
+        if convert_btn and text_input.strip():
+            try:
+                with st.spinner("G&eacute;n&eacute;ration du fichier MP3 en cours..."):
+                    language_code = LANGUAGES[selected_language]
+                    mp3_data = convert_text_to_mp3(text_input.strip(), language_code)
+
+                st.success("✅ Fichier MP3 g&eacute;n&eacute;r&eacute; avec succ&egrave;s !")
+
+                # T&eacute;l&eacute;chargement
+                st.download_button(
+                    label="📥 T&eacute;l&eacute;charger le MP3",
+                    data=mp3_data,
+                    file_name="audio.mp3",
+                    mime="audio/mpeg",
+                    use_container_width=True,
+                )
+
+            except Exception as e:
+                st.error(f"❌ Erreur lors de la conversion : {str(e)}")
+                st.info(
+                    "V&eacute;rifiez votre connexion Internet (gTTS n&eacute;cessite un acc&egrave;s au web)."
+                )
+
+        elif convert_btn and not text_input.strip():
+            st.warning("⚠️ Veuillez saisir du texte avant de convertir.")
+
+    # ============================================
+    # ONGLET 2 : CONVERSION PAR LOT
+    # ============================================
+    with tab2:
+        st.header("Conversion de plusieurs textes (batch)")
+
+        st.markdown(
+            """
+            **Format :** une ligne par fichier au format `nom | texte`
+            
+            **Exemple :**
+            ```
+            fichier_1 | Bonjour, ceci est le premier texte.
+            fichier_2 | This is the second text in English.
+            fichier_3 | Este es el tercer texto en español.
+            ```
+            """
+        )
+
+        # Zone de texte pour le batch
+        batch_input = st.text_area(
+            "Vos textes (un par ligne)",
+            value="fichier_1 | Bonjour, ceci est le premier texte à convertir en audio.\nfichier_2 | This is the second text in English for demonstration.\nfichier_3 | Este es el tercer texto en español para probar el software.",
+            height=250,
+            help="Ajoutez une ligne par fichier : nom | texte",
+        )
+
+        # Boutons d'action
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            convert_batch_btn = st.button("🚀 Convertir tout le lot", type="primary", use_container_width=True)
+
+        with col2:
+            if st.button("📂 Charger exemple", use_container_width=True):
+                st.session_state.batch_example = True
+                st.rerun()
+
+        with col3:
+            if st.button("🗑️ Effacer", use_container_width=True):
+                st.session_state.batch_input = ""
+                st.rerun()
+
+        with col4:
+            st.empty()
+
+        # Gestion de l'exemple
+        if st.session_state.get("batch_example", False):
+            batch_input = "fichier_1 | Bonjour, ceci est le premier texte à convertir en audio.\nfichier_2 | This is the second text in English for demonstration.\nfichier_3 | Este es el tercer texto en español para probar el software.\nintroduction | Bienvenue dans cette leç¬°on de langue étrang&egrave;re.\nexercise_1 | Répé¬°tez apr&egrave;s moi : bonjour, merci, au revoir."
+            st.session_state.batch_example = False
+
+        # Import CSV
+        st.markdown("---")
+        st.subheader("📄 Import CSV (optionnel)")
+
+        uploaded_file = st.file_uploader(
+            "Importer un fichier CSV",
+            type=["csv"],
+            help="Format : deux colonnes nom,texte (avec ou sans ligne d'en-t™te)",
+        )
+
+        if uploaded_file is not None:
+            try:
+                content = uploaded_file.read().decode("utf-8-sig")
+                lines = content.strip().split("\n")
+
+                # Détection et suppression de l'en-t™te
+                if lines and lines[0].lower().startswith(("nom", "name")):
+                    lines = lines[1:]
+
+                # Conversion en format batch
+                batch_lines = []
+                for line in lines:
+                    if line.strip():
+                        parts = line.split(",", 1)
+                        if len(parts) == 2:
+                            name = parts[0].strip().strip('"')
+                            text = parts[1].strip().strip('"')
+                            if text:
+                                batch_lines.append(f"{name} | {text}")
+
+                if batch_lines:
+                    st.success(f"✅ {len(batch_lines)} entr&eacute;e(s) import&eacute;e(s)")
+                    batch_input = "\n".join(batch_lines)
+                else:
+                    st.warning("⚠️ Aucune donn&eacute;e valide trouv&eacute;e dans le CSV")
+
+            except Exception as e:
+                st.error(f"❌ Erreur lors de l'import : {str(e)}")
+
+        # Conversion batch
+        if convert_batch_btn and batch_input.strip():
+            entries, errors = parse_batch_entries(batch_input)
+
+            if errors:
+                st.error("❌ Erreurs dans le format :\n\n" + "\n".join(errors[:5]))
+                if len(errors) > 5:
+                    st.warning(f"... et {len(errors) - 5} autres erreurs")
+            elif not entries:
+                st.warning("⚠️ Aucune entr&eacute;e valide trouv&eacute;e")
+            else:
+                try:
+                    with st.spinner(f"G&eacute;n&eacute;ration de {len(entries)} fichier(s) MP3..."):
+                        language_code = LANGUAGES[selected_language]
+                        mp3_files = []
+
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+
+                        for idx, (name, text) in enumerate(entries, 1):
+                            status_text.text(f"Conversion {idx}/{len(entries)} : {name}.mp3")
+                            mp3_data = convert_text_to_mp3(text, language_code)
+                            mp3_files.append((name, mp3_data))
+                            progress_bar.progress(idx / len(entries))
+
+                        status_text.text("Cr&eacute;ation du fichier ZIP...")
+
+                        # Cr&eacute;ation du ZIP
+                        zip_data = create_zip_from_mp3s(mp3_files)
+
+                        st.success(f"✅ {len(entries)} fichier(s) MP3 g&eacute;n&eacute;r&eacute;(s) avec succ&egrave;s !")
+
+                        # T&eacute;l&eacute;chargement ZIP
+                        st.download_button(
+                            label=f"📥 T&eacute;l&eacute;charger le ZIP ({len(entries)} MP3)",
+                            data=zip_data,
+                            file_name="conversions.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                        )
+
+                        # Liste des fichiers
+                        with st.expander("📋 Voir la liste des fichiers"):
+                            for name, _ in mp3_files:
+                                st.write(f"- `{name}.mp3`")
+
+                except Exception as e:
+                    st.error(f"❌ Erreur lors de la conversion : {str(e)}")
+                    st.info(
+                        "V&eacute;rifiez votre connexion Internet (gTTS n&eacute;cessite un acc&egrave;s au web)."
+                    )
+
+        elif convert_batch_btn and not batch_input.strip():
+            st.warning("⚠️ Veuillez saisir des textes avant de convertir.")
+
+    # ============================================
+    # ONGLET 3 : AIDE
+    # ============================================
+    with tab3:
+        st.header("ℹ️ Aide et informations")
+
+        st.markdown(
+            """
+            ### 🎯 Comment utiliser cette application ?
+            
+            #### Conversion simple
+            1. Saisissez votre texte dans la zone de texte
+            2. S&eacute;lectionnez la langue dans la sidebar
+            3. Cliquez sur "Convertir"
+            4. T&eacute;l&eacute;chargez le fichier MP3
+            
+            #### Conversion par lot
+            1. Ajoutez une ligne par fichier : `nom | texte`
+            2. Cliquez sur "Convertir tout le lot"
+            3. T&eacute;l&eacute;chargez le fichier ZIP contenant tous les MP3
+            
+            ### 📄 Format CSV accept&eacute;
+            
+            ```csv
+            nom,texte
+            bonjour,"Bonjour à tous"
+            hello,"Hello everyone"
+            ```
+            
+            ### 🌐 D&eacute;ploiement sur Streamlit Cloud
+            
+            1. Cr&eacute;ez un compte sur [streamlit.io](https://streamlit.io)
+            2. Connectez votre d&eacute;p™t GitHub
+            3. S&eacute;lectionnez ce fichier `app_streamlit.py`
+            4. D&eacute;ploiez gratuitement !
+            
+            ### ⚠️ Limitations
+            
+            - **gTTS n&eacute;cessite une connexion Internet**
+            - Texte maximum : ~5000 caract&egrave;res par conversion
+            - Limite de d&eacute;p™t : 100 fichiers par lot (recommand&eacute;)
+            
+            ### 🔧 Technologies utilis&eacute;es
+            
+            - **Streamlit** : interface web
+            - **gTTS** : Google Text-to-Speech
+            - **Python** : langage de programmation
+            """
+        )
+
+        st.markdown("---")
+        st.info(
+            "💡 **Astuce** : Pour importer un fichier texte, copiez-collez simplement son contenu dans la zone de texte."
+        )
 
 
 if __name__ == "__main__":
