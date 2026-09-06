@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
-"""
-Convertisseur Texte vers MP3 - Version Streamlit Cloud
-Dé¬°ploiement gratuit sur https://streamlit.io/cloud
-"""
+"""Application Streamlit : Texte vers MP3 avec lots, accents anglais et vitesses."""
 
 import csv
 import io
-import os
 import re
 import zipfile
 from typing import List, Tuple
@@ -14,356 +10,297 @@ from typing import List, Tuple
 import streamlit as st
 from gtts import gTTS
 
-# Configuration de la page
 st.set_page_config(
-    page_title="Convertisseur Texte vers MP3",
+    page_title="Texte vers MP3",
     page_icon="🎙️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Constantes
-LANGUAGES = {"Franç¬°ais": "fr", "English": "en", "Españ¬°¬∞ol": "es"}
+LANGUAGES = {
+    "Français": "fr",
+    "English (US)": "en",
+    "English (UK)": "en-uk",
+    "English (Irish)": "en-ie",
+    "English (Canadian)": "en-ca",
+    "English (Australian)": "en-au",
+    "English (South African)": "en-za",
+    "Español": "es",
+}
+
+# gTTS propose seulement deux vitesses publiques : normale et lente.
+# Les facteurs 0.8x, 0.6x et 0.5x sont appliqués après la synthèse via pydub/ffmpeg.
+SPEEDS = {
+    "Normale (1.0x)": 1.0,
+    "Lent (0.8x)": 0.8,
+    "Très lent (0.6x)": 0.6,
+    "Extrêmement lent (0.5x)": 0.5,
+}
+
 INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def safe_filename(name: str, fallback: str) -> str:
-    """Nettoie un nom de fichier pour qu'il soit valide."""
-    name = INVALID_FILENAME.sub("_", name.strip())
-    name = name.rstrip(". ")
-    return (name[:100] or fallback).replace(" ", "_").lower()
+    """Produit un nom compatible avec les fichiers Windows et les archives ZIP."""
+    cleaned = INVALID_FILENAME.sub("_", name.strip()).rstrip(". ")
+    return (cleaned[:100] or fallback).replace(" ", "_")
 
 
-def parse_batch_entries(text: str) -> Tuple[List[Tuple[str, str]], List[str]]:
-    """Parse les entré¬°es batch et retourne (entré¬°es, erreurs)."""
-    entries, errors = [], []
-    for number, line in enumerate(text.splitlines(), 1):
+def parse_batch_entries(content: str) -> Tuple[List[Tuple[str, str]], List[str]]:
+    """Lit les lignes `nom | texte` d'un lot."""
+    entries: List[Tuple[str, str]] = []
+    errors: List[str] = []
+    for line_number, line in enumerate(content.splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
         if "|" not in line:
-            errors.append(f"Ligne {number} : séparateur « | » manquant")
+            errors.append(f"Ligne {line_number} : le séparateur `|` est manquant.")
             continue
-        parts = line.split("|", 1)
-        if len(parts) != 2:
-            errors.append(f"Ligne {number} : format invalide")
+        name, text = (part.strip() for part in line.split("|", 1))
+        if not text:
+            errors.append(f"Ligne {line_number} : le texte est vide.")
             continue
-        name, text_content = parts[0].strip(), parts[1].strip()
-        if not text_content:
-            errors.append(f"Ligne {number} : texte manquant")
-            continue
-        entries.append((safe_filename(name, f"fichier_{number}"), text_content))
+        entries.append((safe_filename(name, f"fichier_{line_number}"), text))
     return entries, errors
 
 
-def convert_text_to_mp3(text: str, language: str) -> bytes:
-    """Convertit un texte en MP3 et retourne les bytes."""
-    tts = gTTS(text=text, lang=language, slow=False)
-    mp3_io = io.BytesIO()
-    tts.write_to_fp(mp3_io)
-    mp3_io.seek(0)
-    return mp3_io.read()
+def parse_csv(uploaded_file) -> List[Tuple[str, str]]:
+    """Lit un CSV à deux colonnes : nom,texte (virgule, point-virgule ou tabulation)."""
+    raw = uploaded_file.getvalue().decode("utf-8-sig")
+    sample = raw[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=";,\t")
+    except csv.Error:
+        dialect = csv.excel
+
+    reader = csv.reader(io.StringIO(raw), dialect)
+    rows = list(reader)
+    if rows and len(rows[0]) >= 2:
+        header = [cell.strip().lower() for cell in rows[0][:2]]
+        if header in (["nom", "texte"], ["name", "text"]):
+            rows = rows[1:]
+
+    entries: List[Tuple[str, str]] = []
+    for position, row in enumerate(rows, start=1):
+        if len(row) < 2:
+            continue
+        name, text = row[0].strip(), row[1].strip()
+        if text:
+            entries.append((safe_filename(name, f"fichier_{position}"), text))
+    return entries
 
 
-def create_zip_from_mp3s(mp3_files: List[Tuple[str, bytes]]) -> bytes:
-    """Cré¬°e un fichier ZIP contenant plusieurs MP3."""
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for filename, mp3_data in mp3_files:
-            zip_file.writestr(f"{filename}.mp3", mp3_data)
-    zip_buffer.seek(0)
-    return zip_buffer.read()
+def mp3_at_speed(mp3_data: bytes, speed: float) -> bytes:
+    """Change la vitesse sans modifier la hauteur de la voix."""
+    if speed == 1.0:
+        return mp3_data
+
+    from pydub import AudioSegment
+
+    source = AudioSegment.from_file(io.BytesIO(mp3_data), format="mp3")
+    changed = source._spawn(
+        source.raw_data,
+        overrides={"frame_rate": int(source.frame_rate * speed)},
+    ).set_frame_rate(source.frame_rate)
+    result = io.BytesIO()
+    changed.export(result, format="mp3", bitrate="128k")
+    return result.getvalue()
 
 
-def main():
-    """Application principale Streamlit."""
+def create_mp3(text: str, language_code: str, speed: float) -> bytes:
+    """Génère un MP3 gTTS et applique ensuite la vitesse choisie."""
+    buffer = io.BytesIO()
+    gTTS(text=text, lang=language_code, slow=False).write_to_fp(buffer)
+    return mp3_at_speed(buffer.getvalue(), speed)
 
-    # En-t™te
-    st.title("🎙️ Convertisseur Texte vers MP3")
-    st.markdown(
-        """
-        Convertissez vos textes en fichiers audio MP3. 
-        **Conversion simple** ou **par lot** avec t&eacute;l&eacute;chargement.
-        """
+
+def create_zip(files: List[Tuple[str, bytes]]) -> bytes:
+    """Construit une archive ZIP en mémoire."""
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for filename, mp3 in files:
+            archive.writestr(f"{filename}.mp3", mp3)
+    return output.getvalue()
+
+
+def configure_state() -> None:
+    """Initialise les zones de saisie persistantes de Streamlit."""
+    st.session_state.setdefault("single_text", "")
+    st.session_state.setdefault(
+        "batch_text",
+        "fichier_1 | Bonjour, ceci est le premier texte.\n"
+        "fichier_2 | This is the second text in English.\n"
+        "fichier_3 | Este es el tercer texto en español.",
     )
 
-    # Sidebar - S&eacute;lection de la langue
+
+def settings_sidebar() -> Tuple[str, float]:
     with st.sidebar:
-        st.header("⚙️ Param&egrave;tres")
-        selected_language = st.selectbox(
-            "Langue",
-            options=list(LANGUAGES.keys()),
-            index=0,
-            help="La langue choisie est utilis&eacute;e pour toutes les conversions",
-        )
-        st.info(
-            "💡 **Astuce** : gTTS n&eacute;cessite une connexion Internet pour fonctionner."
-        )
+        st.header("⚙️ Paramètres audio")
+        selected_name = st.selectbox("Langue / accent", list(LANGUAGES), index=0)
+        speed_name = st.selectbox("Vitesse d'enregistrement", list(SPEEDS), index=0)
         st.markdown("---")
-        st.markdown(
-            """
-            **Fonctionnalit&eacute;s :**
-            - Conversion texte → MP3
-            - Mode batch (plusieurs fichiers)
-            - Import CSV
-            - T&eacute;l&eacute;chargement ZIP
-            """
-        )
+        st.caption("Les accents proposés s'appliquent aux textes anglais.")
+        st.caption("Les MP3 ralentis sont traités avec FFmpeg dans l'environnement Streamlit.")
+        st.markdown("### Accents anglais")
+        st.markdown("US · UK · Irish · Canadian · Australian · South African")
+    return LANGUAGES[selected_name], SPEEDS[speed_name]
 
-    # Onglets
-    tab1, tab2, tab3 = st.tabs(["📝 Conversion simple", "📦 Conversion par lot", "ℹ️ Aide"])
 
-    # ============================================
-    # ONGLET 1 : CONVERSION SIMPLE
-    # ============================================
-    with tab1:
-        st.header("Conversion d'un seul texte")
+def show_single_tab(language_code: str, speed: float) -> None:
+    st.subheader("Conversion d'un texte")
+    st.text_area(
+        "Votre texte",
+        key="single_text",
+        height=255,
+        placeholder="Écrivez ou collez votre texte ici…",
+    )
 
-        text_input = st.text_area(
-            "Votre texte",
-            height=200,
-            placeholder="Saisissez ou collez votre texte ici...",
-            help="Vous pouvez aussi importer un fichier .txt depuis l'onglet Aide",
-        )
+    left, right = st.columns([1, 3])
+    with left:
+        convert = st.button("🔊 Créer le MP3", type="primary", use_container_width=True)
+    with right:
+        if st.button("🗑️ Effacer le texte", use_container_width=False):
+            st.session_state.single_text = ""
+            st.rerun()
 
-        col1, col2, col3 = st.columns([1, 1, 2])
+    if convert:
+        text = st.session_state.single_text.strip()
+        if not text:
+            st.warning("Veuillez d'abord saisir un texte.")
+            return
+        try:
+            with st.spinner("Génération du MP3 en cours…"):
+                audio = create_mp3(text, language_code, speed)
+            st.success("Le fichier audio est prêt.")
+            st.audio(audio, format="audio/mpeg")
+            st.download_button(
+                "📥 Télécharger audio.mp3",
+                data=audio,
+                file_name="audio.mp3",
+                mime="audio/mpeg",
+                type="primary",
+            )
+        except Exception as error:
+            st.error(f"Impossible de créer le MP3 : {error}")
 
-        with col1:
-            convert_btn = st.button("🔊 Convertir", type="primary", use_container_width=True)
 
-        with col2:
-            if st.button("🗑️ Effacer", use_container_width=True):
-                st.session_state.single_text = ""
-                st.rerun()
+def show_batch_tab(language_code: str, speed: float) -> None:
+    st.subheader("Conversion par lot")
+    st.write("Ajoutez une ligne par fichier, selon le modèle : `nom_du_fichier | texte à lire`.")
 
-        with col3:
-            st.empty()
+    st.text_area("Liste des fichiers", key="batch_text", height=250)
+    controls = st.columns([1, 1, 3])
+    with controls[0]:
+        convert = st.button("🚀 Créer le ZIP", type="primary", use_container_width=True)
+    with controls[1]:
+        if st.button("🗑️ Effacer", use_container_width=True):
+            st.session_state.batch_text = ""
+            st.rerun()
 
-        if convert_btn and text_input.strip():
-            try:
-                with st.spinner("G&eacute;n&eacute;ration du fichier MP3 en cours..."):
-                    language_code = LANGUAGES[selected_language]
-                    mp3_data = convert_text_to_mp3(text_input.strip(), language_code)
-
-                st.success("✅ Fichier MP3 g&eacute;n&eacute;r&eacute; avec succ&egrave;s !")
-
-                # T&eacute;l&eacute;chargement
-                st.download_button(
-                    label="📥 T&eacute;l&eacute;charger le MP3",
-                    data=mp3_data,
-                    file_name="audio.mp3",
-                    mime="audio/mpeg",
-                    use_container_width=True,
-                )
-
-            except Exception as e:
-                st.error(f"❌ Erreur lors de la conversion : {str(e)}")
-                st.info(
-                    "V&eacute;rifiez votre connexion Internet (gTTS n&eacute;cessite un acc&egrave;s au web)."
-                )
-
-        elif convert_btn and not text_input.strip():
-            st.warning("⚠️ Veuillez saisir du texte avant de convertir.")
-
-    # ============================================
-    # ONGLET 2 : CONVERSION PAR LOT
-    # ============================================
-    with tab2:
-        st.header("Conversion de plusieurs textes (batch)")
-
-        st.markdown(
-            """
-            **Format :** une ligne par fichier au format `nom | texte`
-            
-            **Exemple :**
-            ```
-            fichier_1 | Bonjour, ceci est le premier texte.
-            fichier_2 | This is the second text in English.
-            fichier_3 | Este es el tercer texto en español.
-            ```
-            """
-        )
-
-        # Zone de texte pour le batch
-        batch_input = st.text_area(
-            "Vos textes (un par ligne)",
-            value="fichier_1 | Bonjour, ceci est le premier texte à convertir en audio.\nfichier_2 | This is the second text in English for demonstration.\nfichier_3 | Este es el tercer texto en español para probar el software.",
-            height=250,
-            help="Ajoutez une ligne par fichier : nom | texte",
-        )
-
-        # Boutons d'action
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            convert_batch_btn = st.button("🚀 Convertir tout le lot", type="primary", use_container_width=True)
-
-        with col2:
-            if st.button("📂 Charger exemple", use_container_width=True):
-                st.session_state.batch_example = True
-                st.rerun()
-
-        with col3:
-            if st.button("🗑️ Effacer", use_container_width=True):
-                st.session_state.batch_input = ""
-                st.rerun()
-
-        with col4:
-            st.empty()
-
-        # Gestion de l'exemple
-        if st.session_state.get("batch_example", False):
-            batch_input = "fichier_1 | Bonjour, ceci est le premier texte à convertir en audio.\nfichier_2 | This is the second text in English for demonstration.\nfichier_3 | Este es el tercer texto en español para probar el software.\nintroduction | Bienvenue dans cette leç¬°on de langue étrang&egrave;re.\nexercise_1 | Répé¬°tez apr&egrave;s moi : bonjour, merci, au revoir."
-            st.session_state.batch_example = False
-
-        # Import CSV
-        st.markdown("---")
-        st.subheader("📄 Import CSV (optionnel)")
-
-        uploaded_file = st.file_uploader(
-            "Importer un fichier CSV",
-            type=["csv"],
-            help="Format : deux colonnes nom,texte (avec ou sans ligne d'en-t™te)",
-        )
-
-        if uploaded_file is not None:
-            try:
-                content = uploaded_file.read().decode("utf-8-sig")
-                lines = content.strip().split("\n")
-
-                # Détection et suppression de l'en-t™te
-                if lines and lines[0].lower().startswith(("nom", "name")):
-                    lines = lines[1:]
-
-                # Conversion en format batch
-                batch_lines = []
-                for line in lines:
-                    if line.strip():
-                        parts = line.split(",", 1)
-                        if len(parts) == 2:
-                            name = parts[0].strip().strip('"')
-                            text = parts[1].strip().strip('"')
-                            if text:
-                                batch_lines.append(f"{name} | {text}")
-
-                if batch_lines:
-                    st.success(f"✅ {len(batch_lines)} entr&eacute;e(s) import&eacute;e(s)")
-                    batch_input = "\n".join(batch_lines)
-                else:
-                    st.warning("⚠️ Aucune donn&eacute;e valide trouv&eacute;e dans le CSV")
-
-            except Exception as e:
-                st.error(f"❌ Erreur lors de l'import : {str(e)}")
-
-        # Conversion batch
-        if convert_batch_btn and batch_input.strip():
-            entries, errors = parse_batch_entries(batch_input)
-
-            if errors:
-                st.error("❌ Erreurs dans le format :\n\n" + "\n".join(errors[:5]))
-                if len(errors) > 5:
-                    st.warning(f"... et {len(errors) - 5} autres erreurs")
-            elif not entries:
-                st.warning("⚠️ Aucune entr&eacute;e valide trouv&eacute;e")
+    st.markdown("---")
+    st.markdown("#### Importer un fichier CSV")
+    uploaded = st.file_uploader("CSV : colonnes `nom` et `texte`", type=["csv"], key="batch_csv")
+    if uploaded is not None:
+        try:
+            imported = parse_csv(uploaded)
+            if imported:
+                st.session_state.batch_text = "\n".join(f"{name} | {text}" for name, text in imported)
+                st.success(f"{len(imported)} ligne(s) importée(s). Cliquez sur « Créer le ZIP ».")
             else:
-                try:
-                    with st.spinner(f"G&eacute;n&eacute;ration de {len(entries)} fichier(s) MP3..."):
-                        language_code = LANGUAGES[selected_language]
-                        mp3_files = []
+                st.warning("Le CSV ne contient aucune ligne exploitable.")
+        except UnicodeDecodeError:
+            st.error("Le CSV doit être enregistré en UTF-8.")
+        except Exception as error:
+            st.error(f"Import CSV impossible : {error}")
 
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
+    if convert:
+        entries, errors = parse_batch_entries(st.session_state.batch_text)
+        if errors:
+            st.error("\n".join(errors[:10]))
+            return
+        if not entries:
+            st.warning("Ajoutez au moins une ligne valide.")
+            return
+        if len(entries) > 100:
+            st.warning("Pour limiter le temps de traitement, le lot est limité à 100 fichiers.")
+            return
 
-                        for idx, (name, text) in enumerate(entries, 1):
-                            status_text.text(f"Conversion {idx}/{len(entries)} : {name}.mp3")
-                            mp3_data = convert_text_to_mp3(text, language_code)
-                            mp3_files.append((name, mp3_data))
-                            progress_bar.progress(idx / len(entries))
+        files: List[Tuple[str, bytes]] = []
+        progress = st.progress(0, text="Préparation du lot…")
+        try:
+            for index, (name, text) in enumerate(entries, start=1):
+                progress.progress(
+                    (index - 1) / len(entries),
+                    text=f"Conversion {index}/{len(entries)} : {name}.mp3",
+                )
+                files.append((name, create_mp3(text, language_code, speed)))
+            archive = create_zip(files)
+            progress.progress(100, text="Archive ZIP prête.")
+            st.success(f"{len(files)} fichiers MP3 ont été générés.")
+            st.download_button(
+                f"📥 Télécharger conversions.zip ({len(files)} MP3)",
+                data=archive,
+                file_name="conversions.zip",
+                mime="application/zip",
+                type="primary",
+            )
+            with st.expander("Voir les fichiers inclus"):
+                st.code("\n".join(f"{name}.mp3" for name, _ in files))
+        except Exception as error:
+            st.error(f"Erreur pendant le traitement du lot : {error}")
 
-                        status_text.text("Cr&eacute;ation du fichier ZIP...")
 
-                        # Cr&eacute;ation du ZIP
-                        zip_data = create_zip_from_mp3s(mp3_files)
+def show_help_tab() -> None:
+    st.subheader("Aide")
+    st.markdown(
+        """
+### Conversion simple
+1. Choisissez la langue ou l'accent et la vitesse dans le panneau de gauche.
+2. Saisissez le texte puis cliquez sur **Créer le MP3**.
+3. Écoutez-le dans la page ou téléchargez-le.
 
-                        st.success(f"✅ {len(entries)} fichier(s) MP3 g&eacute;n&eacute;r&eacute;(s) avec succ&egrave;s !")
+### Conversion par lot
+Utilisez une ligne par audio, avec le format `nom | texte` :
 
-                        # T&eacute;l&eacute;chargement ZIP
-                        st.download_button(
-                            label=f"📥 T&eacute;l&eacute;charger le ZIP ({len(entries)} MP3)",
-                            data=zip_data,
-                            file_name="conversions.zip",
-                            mime="application/zip",
-                            use_container_width=True,
-                        )
+```text
+lesson_01 | Good morning, class.
+lesson_02 | Please listen and repeat.
+```
 
-                        # Liste des fichiers
-                        with st.expander("📋 Voir la liste des fichiers"):
-                            for name, _ in mp3_files:
-                                st.write(f"- `{name}.mp3`")
+L'application produit une archive ZIP contenant `lesson_01.mp3` et `lesson_02.mp3`.
 
-                except Exception as e:
-                    st.error(f"❌ Erreur lors de la conversion : {str(e)}")
-                    st.info(
-                        "V&eacute;rifiez votre connexion Internet (gTTS n&eacute;cessite un acc&egrave;s au web)."
-                    )
+### CSV
+Le CSV doit être encodé en UTF-8 et contenir deux colonnes :
 
-        elif convert_batch_btn and not batch_input.strip():
-            st.warning("⚠️ Veuillez saisir des textes avant de convertir.")
+```csv
+nom,texte
+lesson_01,"Good morning, class."
+lesson_02,"Please listen and repeat."
+```
 
-    # ============================================
-    # ONGLET 3 : AIDE
-    # ============================================
-    with tab3:
-        st.header("ℹ️ Aide et informations")
+### Limites
+- Une connexion Internet est nécessaire pour Google Text-to-Speech.
+- Les traitements lents (0.8x, 0.6x, 0.5x) reposent sur FFmpeg.
+- Pour Streamlit Community Cloud, commencez par des lots de 10 à 30 fichiers ; le maximum intégré est de 100 fichiers par lot.
+"""
+    )
 
-        st.markdown(
-            """
-            ### 🎯 Comment utiliser cette application ?
-            
-            #### Conversion simple
-            1. Saisissez votre texte dans la zone de texte
-            2. S&eacute;lectionnez la langue dans la sidebar
-            3. Cliquez sur "Convertir"
-            4. T&eacute;l&eacute;chargez le fichier MP3
-            
-            #### Conversion par lot
-            1. Ajoutez une ligne par fichier : `nom | texte`
-            2. Cliquez sur "Convertir tout le lot"
-            3. T&eacute;l&eacute;chargez le fichier ZIP contenant tous les MP3
-            
-            ### 📄 Format CSV accept&eacute;
-            
-            ```csv
-            nom,texte
-            bonjour,"Bonjour à tous"
-            hello,"Hello everyone"
-            ```
-            
-            ### 🌐 D&eacute;ploiement sur Streamlit Cloud
-            
-            1. Cr&eacute;ez un compte sur [streamlit.io](https://streamlit.io)
-            2. Connectez votre d&eacute;p™t GitHub
-            3. S&eacute;lectionnez ce fichier `app_streamlit.py`
-            4. D&eacute;ploiez gratuitement !
-            
-            ### ⚠️ Limitations
-            
-            - **gTTS n&eacute;cessite une connexion Internet**
-            - Texte maximum : ~5000 caract&egrave;res par conversion
-            - Limite de d&eacute;p™t : 100 fichiers par lot (recommand&eacute;)
-            
-            ### 🔧 Technologies utilis&eacute;es
-            
-            - **Streamlit** : interface web
-            - **gTTS** : Google Text-to-Speech
-            - **Python** : langage de programmation
-            """
-        )
 
-        st.markdown("---")
-        st.info(
-            "💡 **Astuce** : Pour importer un fichier texte, copiez-collez simplement son contenu dans la zone de texte."
-        )
+def main() -> None:
+    configure_state()
+    st.title("🎙️ Convertisseur Texte vers MP3")
+    st.caption("Textes individuels ou lots · MP3 téléchargeables · accents anglais · vitesses pédagogiques")
+    language_code, speed = settings_sidebar()
+
+    simple, batch, help_tab = st.tabs(["📝 Conversion simple", "📦 Conversion par lot", "ℹ️ Aide"])
+    with simple:
+        show_single_tab(language_code, speed)
+    with batch:
+        show_batch_tab(language_code, speed)
+    with help_tab:
+        show_help_tab()
 
 
 if __name__ == "__main__":
