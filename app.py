@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Application Streamlit : Texte vers MP3 avec lots, accents anglais et vitesses."""
+"""Application Streamlit : Texte vers MP3 avec lots et accents anglais."""
 
 import csv
 import io
@@ -18,23 +18,20 @@ st.set_page_config(
 )
 
 LANGUAGES = {
-    "Français": "fr",
+    "Franç·ªais": "fr",
     "English (US)": "en",
     "English (UK)": "en-uk",
     "English (Irish)": "en-ie",
     "English (Canadian)": "en-ca",
     "English (Australian)": "en-au",
     "English (South African)": "en-za",
-    "Español": "es",
+    "Españ·ª·∞ol": "es",
 }
 
-# gTTS propose seulement deux vitesses publiques : normale et lente.
-# Les facteurs 0.8x, 0.6x et 0.5x sont appliqués après la synthèse via pydub/ffmpeg.
+# gTTS propose deux vitesses natives
 SPEEDS = {
-    "Normale (1.0x)": 1.0,
-    "Lent (0.8x)": 0.8,
-    "Très lent (0.6x)": 0.6,
-    "Extrêmement lent (0.5x)": 0.5,
+    "Normale (1.0x)": False,  # slow=False
+    "Lente (0.7x)": True,     # slow=True
 }
 
 INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -91,28 +88,11 @@ def parse_csv(uploaded_file) -> List[Tuple[str, str]]:
     return entries
 
 
-def mp3_at_speed(mp3_data: bytes, speed: float) -> bytes:
-    """Change la vitesse sans modifier la hauteur de la voix."""
-    if speed == 1.0:
-        return mp3_data
-
-    from pydub import AudioSegment
-
-    source = AudioSegment.from_file(io.BytesIO(mp3_data), format="mp3")
-    changed = source._spawn(
-        source.raw_data,
-        overrides={"frame_rate": int(source.frame_rate * speed)},
-    ).set_frame_rate(source.frame_rate)
-    result = io.BytesIO()
-    changed.export(result, format="mp3", bitrate="128k")
-    return result.getvalue()
-
-
-def create_mp3(text: str, language_code: str, speed: float) -> bytes:
-    """Génère un MP3 gTTS et applique ensuite la vitesse choisie."""
+def create_mp3(text: str, language_code: str, slow: bool) -> bytes:
+    """Gé·ªnè·ªre un MP3 avec gTTS."""
     buffer = io.BytesIO()
-    gTTS(text=text, lang=language_code, slow=False).write_to_fp(buffer)
-    return mp3_at_speed(buffer.getvalue(), speed)
+    gTTS(text=text, lang=language_code, slow=slow).write_to_fp(buffer)
+    return buffer.getvalue()
 
 
 def create_zip(files: List[Tuple[str, bytes]]) -> bytes:
@@ -135,26 +115,26 @@ def configure_state() -> None:
     )
 
 
-def settings_sidebar() -> Tuple[str, float]:
+def settings_sidebar() -> Tuple[str, bool]:
     with st.sidebar:
-        st.header("⚙️ Paramètres audio")
+        st.header("⚙️ Paramè·ªtres audio")
         selected_name = st.selectbox("Langue / accent", list(LANGUAGES), index=0)
         speed_name = st.selectbox("Vitesse d'enregistrement", list(SPEEDS), index=0)
         st.markdown("---")
         st.caption("Les accents proposés s'appliquent aux textes anglais.")
-        st.caption("Les MP3 ralentis sont traités avec FFmpeg dans l'environnement Streamlit.")
+        st.caption("La vitesse lente est idéale pour l'apprentissage des langues.")
         st.markdown("### Accents anglais")
         st.markdown("US · UK · Irish · Canadian · Australian · South African")
     return LANGUAGES[selected_name], SPEEDS[speed_name]
 
 
-def show_single_tab(language_code: str, speed: float) -> None:
+def show_single_tab(language_code: str, slow: bool) -> None:
     st.subheader("Conversion d'un texte")
     st.text_area(
         "Votre texte",
         key="single_text",
         height=255,
-        placeholder="Écrivez ou collez votre texte ici…",
+        placeholder="É·⁰crivez ou collez votre texte ici…",
     )
 
     left, right = st.columns([1, 3])
@@ -171,8 +151,8 @@ def show_single_tab(language_code: str, speed: float) -> None:
             st.warning("Veuillez d'abord saisir un texte.")
             return
         try:
-            with st.spinner("Génération du MP3 en cours…"):
-                audio = create_mp3(text, language_code, speed)
+            with st.spinner("Gé·ªné·ªration du MP3 en cours…"):
+                audio = create_mp3(text, language_code, slow)
             st.success("Le fichier audio est prêt.")
             st.audio(audio, format="audio/mpeg")
             st.download_button(
@@ -186,7 +166,7 @@ def show_single_tab(language_code: str, speed: float) -> None:
             st.error(f"Impossible de créer le MP3 : {error}")
 
 
-def show_batch_tab(language_code: str, speed: float) -> None:
+def show_batch_tab(language_code: str, slow: bool) -> None:
     st.subheader("Conversion par lot")
     st.write("Ajoutez une ligne par fichier, selon le modèle : `nom_du_fichier | texte à lire`.")
 
@@ -207,7 +187,7 @@ def show_batch_tab(language_code: str, speed: float) -> None:
             imported = parse_csv(uploaded)
             if imported:
                 st.session_state.batch_text = "\n".join(f"{name} | {text}" for name, text in imported)
-                st.success(f"{len(imported)} ligne(s) importée(s). Cliquez sur « Créer le ZIP ».")
+                st.success(f"{len(imported)} ligne(s) importé·ªe(s). Cliquez sur « Créer le ZIP ».")
             else:
                 st.warning("Le CSV ne contient aucune ligne exploitable.")
         except UnicodeDecodeError:
@@ -228,80 +208,14 @@ def show_batch_tab(language_code: str, speed: float) -> None:
             return
 
         files: List[Tuple[str, bytes]] = []
-        progress = st.progress(0, text="Préparation du lot…")
+        progress = st.progress(0, text="Pré·ªparation du lot…")
         try:
             for index, (name, text) in enumerate(entries, start=1):
                 progress.progress(
                     (index - 1) / len(entries),
                     text=f"Conversion {index}/{len(entries)} : {name}.mp3",
                 )
-                files.append((name, create_mp3(text, language_code, speed)))
+                files.append((name, create_mp3(text, language_code, slow)))
             archive = create_zip(files)
             progress.progress(100, text="Archive ZIP prête.")
-            st.success(f"{len(files)} fichiers MP3 ont été générés.")
-            st.download_button(
-                f"📥 Télécharger conversions.zip ({len(files)} MP3)",
-                data=archive,
-                file_name="conversions.zip",
-                mime="application/zip",
-                type="primary",
-            )
-            with st.expander("Voir les fichiers inclus"):
-                st.code("\n".join(f"{name}.mp3" for name, _ in files))
-        except Exception as error:
-            st.error(f"Erreur pendant le traitement du lot : {error}")
-
-
-def show_help_tab() -> None:
-    st.subheader("Aide")
-    st.markdown(
-        """
-### Conversion simple
-1. Choisissez la langue ou l'accent et la vitesse dans le panneau de gauche.
-2. Saisissez le texte puis cliquez sur **Créer le MP3**.
-3. Écoutez-le dans la page ou téléchargez-le.
-
-### Conversion par lot
-Utilisez une ligne par audio, avec le format `nom | texte` :
-
-```text
-lesson_01 | Good morning, class.
-lesson_02 | Please listen and repeat.
-```
-
-L'application produit une archive ZIP contenant `lesson_01.mp3` et `lesson_02.mp3`.
-
-### CSV
-Le CSV doit être encodé en UTF-8 et contenir deux colonnes :
-
-```csv
-nom,texte
-lesson_01,"Good morning, class."
-lesson_02,"Please listen and repeat."
-```
-
-### Limites
-- Une connexion Internet est nécessaire pour Google Text-to-Speech.
-- Les traitements lents (0.8x, 0.6x, 0.5x) reposent sur FFmpeg.
-- Pour Streamlit Community Cloud, commencez par des lots de 10 à 30 fichiers ; le maximum intégré est de 100 fichiers par lot.
-"""
-    )
-
-
-def main() -> None:
-    configure_state()
-    st.title("🎙️ Convertisseur Texte vers MP3")
-    st.caption("Textes individuels ou lots · MP3 téléchargeables · accents anglais · vitesses pédagogiques")
-    language_code, speed = settings_sidebar()
-
-    simple, batch, help_tab = st.tabs(["📝 Conversion simple", "📦 Conversion par lot", "ℹ️ Aide"])
-    with simple:
-        show_single_tab(language_code, speed)
-    with batch:
-        show_batch_tab(language_code, speed)
-    with help_tab:
-        show_help_tab()
-
-
-if __name__ == "__main__":
-    main()
+            st.success(f"{len(files)} fichiers MP3 ont été gé.
