@@ -18,33 +18,30 @@ st.set_page_config(
 )
 
 LANGUAGES = {
-    "Franç·ªais": "fr",
+    "Francais": "fr",
     "English (US)": "en",
     "English (UK)": "en-uk",
     "English (Irish)": "en-ie",
     "English (Canadian)": "en-ca",
     "English (Australian)": "en-au",
     "English (South African)": "en-za",
-    "Españ·ª·∞ol": "es",
+    "Espanol": "es",
 }
 
-# gTTS propose deux vitesses natives
 SPEEDS = {
-    "Normale (1.0x)": False,  # slow=False
-    "Lente (0.7x)": True,     # slow=True
+    "Normale (1.0x)": False,
+    "Lente (0.7x)": True,
 }
 
 INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def safe_filename(name: str, fallback: str) -> str:
-    """Produit un nom compatible avec les fichiers Windows et les archives ZIP."""
     cleaned = INVALID_FILENAME.sub("_", name.strip()).rstrip(". ")
     return (cleaned[:100] or fallback).replace(" ", "_")
 
 
 def parse_batch_entries(content: str) -> Tuple[List[Tuple[str, str]], List[str]]:
-    """Lit les lignes `nom | texte` d'un lot."""
     entries: List[Tuple[str, str]] = []
     errors: List[str] = []
     for line_number, line in enumerate(content.splitlines(), start=1):
@@ -52,7 +49,7 @@ def parse_batch_entries(content: str) -> Tuple[List[Tuple[str, str]], List[str]]
         if not line:
             continue
         if "|" not in line:
-            errors.append(f"Ligne {line_number} : le séparateur `|` est manquant.")
+            errors.append(f"Ligne {line_number} : le separateur | est manquant.")
             continue
         name, text = (part.strip() for part in line.split("|", 1))
         if not text:
@@ -63,7 +60,6 @@ def parse_batch_entries(content: str) -> Tuple[List[Tuple[str, str]], List[str]]
 
 
 def parse_csv(uploaded_file) -> List[Tuple[str, str]]:
-    """Lit un CSV à deux colonnes : nom,texte (virgule, point-virgule ou tabulation)."""
     raw = uploaded_file.getvalue().decode("utf-8-sig")
     sample = raw[:4096]
     try:
@@ -89,14 +85,12 @@ def parse_csv(uploaded_file) -> List[Tuple[str, str]]:
 
 
 def create_mp3(text: str, language_code: str, slow: bool) -> bytes:
-    """Gé·ªnè·ªre un MP3 avec gTTS."""
     buffer = io.BytesIO()
     gTTS(text=text, lang=language_code, slow=slow).write_to_fp(buffer)
     return buffer.getvalue()
 
 
 def create_zip(files: List[Tuple[str, bytes]]) -> bytes:
-    """Construit une archive ZIP en mémoire."""
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for filename, mp3 in files:
@@ -105,26 +99,23 @@ def create_zip(files: List[Tuple[str, bytes]]) -> bytes:
 
 
 def configure_state() -> None:
-    """Initialise les zones de saisie persistantes de Streamlit."""
     st.session_state.setdefault("single_text", "")
     st.session_state.setdefault(
         "batch_text",
         "fichier_1 | Bonjour, ceci est le premier texte.\n"
         "fichier_2 | This is the second text in English.\n"
-        "fichier_3 | Este es el tercer texto en español.",
+        "fichier_3 | Este es el tercer texto en espanol.",
     )
 
 
 def settings_sidebar() -> Tuple[str, bool]:
     with st.sidebar:
-        st.header("⚙️ Paramè·ªtres audio")
+        st.header("Parametres audio")
         selected_name = st.selectbox("Langue / accent", list(LANGUAGES), index=0)
-        speed_name = st.selectbox("Vitesse d'enregistrement", list(SPEEDS), index=0)
+        speed_name = st.selectbox("Vitesse", list(SPEEDS), index=0)
         st.markdown("---")
-        st.caption("Les accents proposés s'appliquent aux textes anglais.")
-        st.caption("La vitesse lente est idéale pour l'apprentissage des langues.")
-        st.markdown("### Accents anglais")
-        st.markdown("US · UK · Irish · Canadian · Australian · South African")
+        st.caption("Accents anglais : US, UK, Irish, Canadian, Australian, South African")
+        st.caption("Vitesse lente ideale pour l'apprentissage des langues.")
     return LANGUAGES[selected_name], SPEEDS[speed_name]
 
 
@@ -134,64 +125,62 @@ def show_single_tab(language_code: str, slow: bool) -> None:
         "Votre texte",
         key="single_text",
         height=255,
-        placeholder="É·⁰crivez ou collez votre texte ici…",
+        placeholder="Ecrivez ou collez votre texte ici...",
     )
 
     left, right = st.columns([1, 3])
     with left:
-        convert = st.button("🔊 Créer le MP3", type="primary", use_container_width=True)
+        convert = st.button("Creer le MP3", type="primary", use_container_width=True)
     with right:
-        if st.button("🗑️ Effacer le texte", use_container_width=False):
+        if st.button("Effacer", use_container_width=False):
             st.session_state.single_text = ""
             st.rerun()
 
     if convert:
         text = st.session_state.single_text.strip()
         if not text:
-            st.warning("Veuillez d'abord saisir un texte.")
+            st.warning("Veuillez saisir un texte.")
             return
         try:
-            with st.spinner("Gé·ªné·ªration du MP3 en cours…"):
+            with st.spinner("Generation du MP3..."):
                 audio = create_mp3(text, language_code, slow)
-            st.success("Le fichier audio est prêt.")
+            st.success("Fichier audio pret.")
             st.audio(audio, format="audio/mpeg")
             st.download_button(
-                "📥 Télécharger audio.mp3",
+                "Telecharger audio.mp3",
                 data=audio,
                 file_name="audio.mp3",
                 mime="audio/mpeg",
                 type="primary",
             )
         except Exception as error:
-            st.error(f"Impossible de créer le MP3 : {error}")
+            st.error(f"Erreur : {error}")
 
 
 def show_batch_tab(language_code: str, slow: bool) -> None:
     st.subheader("Conversion par lot")
-    st.write("Ajoutez une ligne par fichier, selon le modèle : `nom_du_fichier | texte à lire`.")
+    st.write("Format : nom_du_fichier | texte a lire")
 
     st.text_area("Liste des fichiers", key="batch_text", height=250)
     controls = st.columns([1, 1, 3])
     with controls[0]:
-        convert = st.button("🚀 Créer le ZIP", type="primary", use_container_width=True)
+        convert = st.button("Creer le ZIP", type="primary", use_container_width=True)
     with controls[1]:
-        if st.button("🗑️ Effacer", use_container_width=True):
+        if st.button("Effacer", use_container_width=True):
             st.session_state.batch_text = ""
             st.rerun()
 
     st.markdown("---")
-    st.markdown("#### Importer un fichier CSV")
-    uploaded = st.file_uploader("CSV : colonnes `nom` et `texte`", type=["csv"], key="batch_csv")
+    st.markdown("#### Import CSV")
+    uploaded = st.file_uploader("CSV : colonnes nom et texte", type=["csv"], key="batch_csv")
     if uploaded is not None:
         try:
             imported = parse_csv(uploaded)
             if imported:
                 st.session_state.batch_text = "\n".join(f"{name} | {text}" for name, text in imported)
-                st.success(f"{len(imported)} ligne(s) importé·ªe(s). Cliquez sur « Créer le ZIP ».")
+                st.success(f"{len(imported)} ligne(s) importee(s).")
             else:
-                st.warning("Le CSV ne contient aucune ligne exploitable.")
-        except UnicodeDecodeError:
-            st.error("Le CSV doit être enregistré en UTF-8.")
+                st.warning("CSV vide ou invalide.")
         except Exception as error:
             st.error(f"Import CSV impossible : {error}")
 
@@ -201,21 +190,80 @@ def show_batch_tab(language_code: str, slow: bool) -> None:
             st.error("\n".join(errors[:10]))
             return
         if not entries:
-            st.warning("Ajoutez au moins une ligne valide.")
+            st.warning("Ajoutez au moins une ligne.")
             return
         if len(entries) > 100:
-            st.warning("Pour limiter le temps de traitement, le lot est limité à 100 fichiers.")
+            st.warning("Maximum 100 fichiers par lot.")
             return
 
         files: List[Tuple[str, bytes]] = []
-        progress = st.progress(0, text="Pré·ªparation du lot…")
+        progress = st.progress(0, text="Preparation...")
         try:
             for index, (name, text) in enumerate(entries, start=1):
-                progress.progress(
-                    (index - 1) / len(entries),
-                    text=f"Conversion {index}/{len(entries)} : {name}.mp3",
-                )
+                progress.progress((index - 1) / len(entries), text=f"{index}/{len(entries)} : {name}.mp3")
                 files.append((name, create_mp3(text, language_code, slow)))
             archive = create_zip(files)
-            progress.progress(100, text="Archive ZIP prête.")
-            st.success(f"{len(files)} fichiers MP3 ont été gé.
+            progress.progress(100, text="ZIP pret.")
+            st.success(f"{len(files)} MP3 generes.")
+            st.download_button(
+                f"Telecharger ZIP ({len(files)} MP3)",
+                data=archive,
+                file_name="conversions.zip",
+                mime="application/zip",
+                type="primary",
+            )
+            with st.expander("Voir les fichiers"):
+                st.code("\n".join(f"{name}.mp3" for name, _ in files))
+        except Exception as error:
+            st.error(f"Erreur : {error}")
+
+
+def show_help_tab() -> None:
+    st.subheader("Aide")
+    st.markdown(
+        """
+### Conversion simple
+1. Choisissez langue/accent et vitesse (sidebar gauche)
+2. Saisissez le texte
+3. Cliquez sur "Creer le MP3"
+4. Telechargez
+
+### Conversion par lot
+Format : `nom | texte`
+
+```
+lesson_01 | Good morning, class.
+lesson_02 | Please listen and repeat.
+```
+
+### CSV
+```csv
+nom,texte
+lesson_01,"Good morning, class."
+lesson_02,"Please listen and repeat."
+```
+
+### Limites
+- Connexion Internet requise (gTTS)
+- Maximum 100 fichiers par lot
+"""
+    )
+
+
+def main() -> None:
+    configure_state()
+    st.title("Convertisseur Texte vers MP3")
+    st.caption("Accents anglais - Vitesses pedagogiques - Lots - CSV")
+    language_code, slow = settings_sidebar()
+
+    simple, batch, help_tab = st.tabs(["Conversion simple", "Conversion par lot", "Aide"])
+    with simple:
+        show_single_tab(language_code, slow)
+    with batch:
+        show_batch_tab(language_code, slow)
+    with help_tab:
+        show_help_tab()
+
+
+if __name__ == "__main__":
+    main()
