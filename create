@@ -18,14 +18,14 @@ st.set_page_config(
 )
 
 LANGUAGES = {
-    "Francais": "fr",
-    "English (US)": "en",
-    "English (UK)": "en-uk",
-    "English (Irish)": "en-ie",
-    "English (Canadian)": "en-ca",
-    "English (Australian)": "en-au",
-    "English (South African)": "en-za",
-    "Espanol": "es",
+    "Francais": {"lang": "fr", "tld": "fr"},
+    "English (US)": {"lang": "en", "tld": "us"},
+    "English (UK)": {"lang": "en", "tld": "co.uk"},
+    "English (Irish)": {"lang": "en", "tld": "ie"},
+    "English (Canadian)": {"lang": "en", "tld": "ca"},
+    "English (Australian)": {"lang": "en", "tld": "com.au"},
+    "English (South African)": {"lang": "en", "tld": "co.za"},
+    "Espanol": {"lang": "es", "tld": "es"},
 }
 
 SPEEDS = {
@@ -84,9 +84,17 @@ def parse_csv(uploaded_file) -> List[Tuple[str, str]]:
     return entries
 
 
-def create_mp3(text: str, language_code: str, slow: bool) -> bytes:
+def create_mp3(text: str, language: dict, slow: bool) -> bytes:
+    """Genere un MP3 avec la langue, l'accent et la vitesse selectionnes."""
     buffer = io.BytesIO()
-    gTTS(text=text, lang=language_code, slow=slow).write_to_fp(buffer)
+
+    gTTS(
+        text=text,
+        lang=language["lang"],
+        tld=language["tld"],
+        slow=slow,
+    ).write_to_fp(buffer)
+
     return buffer.getvalue()
 
 
@@ -119,7 +127,7 @@ def settings_sidebar() -> Tuple[str, bool]:
     return LANGUAGES[selected_name], SPEEDS[speed_name]
 
 
-def show_single_tab(language_code: str, slow: bool) -> None:
+def show_single_tab(language: dict, slow: bool) -> None:
     st.subheader("Conversion d'un texte")
     st.text_area(
         "Votre texte",
@@ -143,7 +151,7 @@ def show_single_tab(language_code: str, slow: bool) -> None:
             return
         try:
             with st.spinner("Generation du MP3..."):
-                audio = create_mp3(text, language_code, slow)
+                audio = create_mp3(text, language, slow)
             st.success("Fichier audio pret.")
             st.audio(audio, format="audio/mpeg")
             st.download_button(
@@ -157,7 +165,7 @@ def show_single_tab(language_code: str, slow: bool) -> None:
             st.error(f"Erreur : {error}")
 
 
-def show_batch_tab(language_code: str, slow: bool) -> None:
+def show_batch_tab(language: dict, slow: bool) -> None:
     st.subheader("Conversion par lot")
     st.write("Format : nom_du_fichier | texte a lire")
 
@@ -201,7 +209,7 @@ def show_batch_tab(language_code: str, slow: bool) -> None:
         try:
             for index, (name, text) in enumerate(entries, start=1):
                 progress.progress((index - 1) / len(entries), text=f"{index}/{len(entries)} : {name}.mp3")
-                files.append((name, create_mp3(text, language_code, slow)))
+                files.append((name, create_mp3(text, language, slow)))
             archive = create_zip(files)
             progress.progress(100, text="ZIP pret.")
             st.success(f"{len(files)} MP3 generes.")
