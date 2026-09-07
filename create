@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Application Streamlit : Texte vers MP3 avec lots et accents anglais."""
+"""Application Streamlit : Texte vers MP3 avec lots et accents anglais avec GTTS"""
 
 import csv
 import io
