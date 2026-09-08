@@ -87,15 +87,7 @@ def parse_csv(uploaded_file) -> List[Tuple[str, str]]:
 
 
 def create_mp3(text: str, language: dict, slow: bool) -> bytes:
-    """
-    Génère un MP3 avec la langue, l'accent et la vitesse sélectionnés.
-    
-    Pour l'anglais : lang="en" + tld spécifique (com, co.uk, com.au, etc.)
-    Pour le français : lang="fr", tld="fr"
-    Pour l'espagnol : lang="es", tld="es"
-    """
     buffer = io.BytesIO()
-
     tts = gTTS(
         text=text,
         lang=language["lang"],
@@ -103,7 +95,6 @@ def create_mp3(text: str, language: dict, slow: bool) -> bytes:
         slow=slow,
     )
     tts.write_to_fp(buffer)
-
     return buffer.getvalue()
 
 
@@ -128,7 +119,7 @@ def configure_state() -> None:
 def settings_sidebar() -> Tuple[dict, bool]:
     with st.sidebar:
         st.header("Parametres audio")
-        selected_name = st.selectbox("Langue / accent", list(LANGUAGES), index=1)  # index=1 → English (US) par défaut
+        selected_name = st.selectbox("Langue / accent", list(LANGUAGES), index=1)
         speed_name = st.selectbox("Vitesse", list(SPEEDS), index=0)
         st.markdown("---")
         st.caption("Accents anglais : US, UK, Irish, Canadian, Australian, South African")
@@ -242,8 +233,45 @@ def show_help_tab() -> None:
 ### Conversion simple
 1. Choisissez langue/accent et vitesse (sidebar gauche)
 2. Saisissez le texte
-3. Cliquez sur "Creer le MP3"
+3. Cliquez sur Creer le MP3
 4. Telechargez
 
 ### Conversion par lot
-Format : `nom | texte`
+Format : nom | texte
+
+```
+lesson_01 | Good morning, class.
+lesson_02 | Please listen and repeat.
+```
+
+### CSV
+```csv
+nom,texte
+lesson_01,"Good morning, class."
+lesson_02,"Please listen and repeat."
+```
+
+### Limites
+- Connexion Internet requise (gTTS)
+- Maximum 100 fichiers par lot
+"""
+    )
+
+
+def main() -> None:
+    configure_state()
+    st.title("Convertisseur Texte vers MP3")
+    st.caption("Accents anglais - Vitesses pedagogiques - Lots - CSV")
+    language, slow = settings_sidebar()
+
+    simple, batch, help_tab = st.tabs(["Conversion simple", "Conversion par lot", "Aide"])
+    with simple:
+        show_single_tab(language, slow)
+    with batch:
+        show_batch_tab(language, slow)
+    with help_tab:
+        show_help_tab()
+
+
+if __name__ == "__main__":
+    main()
