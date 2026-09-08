@@ -17,9 +17,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Configuration des langues et accents
+# Pour l'anglais, lang="en" + tld spécifique pour chaque accent
 LANGUAGES = {
     "Francais": {"lang": "fr", "tld": "fr"},
-    "English (US)": {"lang": "en", "tld": "us"},
+    "English (US)": {"lang": "en", "tld": "com"},
     "English (UK)": {"lang": "en", "tld": "co.uk"},
     "English (Irish)": {"lang": "en", "tld": "ie"},
     "English (Canadian)": {"lang": "en", "tld": "ca"},
@@ -85,15 +87,22 @@ def parse_csv(uploaded_file) -> List[Tuple[str, str]]:
 
 
 def create_mp3(text: str, language: dict, slow: bool) -> bytes:
-    """Genere un MP3 avec la langue, l'accent et la vitesse selectionnes."""
+    """
+    Génère un MP3 avec la langue, l'accent et la vitesse sélectionnés.
+    
+    Pour l'anglais : lang="en" + tld spécifique (com, co.uk, com.au, etc.)
+    Pour le français : lang="fr", tld="fr"
+    Pour l'espagnol : lang="es", tld="es"
+    """
     buffer = io.BytesIO()
 
-    gTTS(
+    tts = gTTS(
         text=text,
         lang=language["lang"],
         tld=language["tld"],
         slow=slow,
-    ).write_to_fp(buffer)
+    )
+    tts.write_to_fp(buffer)
 
     return buffer.getvalue()
 
@@ -116,10 +125,10 @@ def configure_state() -> None:
     )
 
 
-def settings_sidebar() -> Tuple[str, bool]:
+def settings_sidebar() -> Tuple[dict, bool]:
     with st.sidebar:
         st.header("Parametres audio")
-        selected_name = st.selectbox("Langue / accent", list(LANGUAGES), index=0)
+        selected_name = st.selectbox("Langue / accent", list(LANGUAGES), index=1)  # index=1 → English (US) par défaut
         speed_name = st.selectbox("Vitesse", list(SPEEDS), index=0)
         st.markdown("---")
         st.caption("Accents anglais : US, UK, Irish, Canadian, Australian, South African")
@@ -238,40 +247,3 @@ def show_help_tab() -> None:
 
 ### Conversion par lot
 Format : `nom | texte`
-
-```
-lesson_01 | Good morning, class.
-lesson_02 | Please listen and repeat.
-```
-
-### CSV
-```csv
-nom,texte
-lesson_01,"Good morning, class."
-lesson_02,"Please listen and repeat."
-```
-
-### Limites
-- Connexion Internet requise (gTTS)
-- Maximum 100 fichiers par lot
-"""
-    )
-
-
-def main() -> None:
-    configure_state()
-    st.title("Convertisseur Texte vers MP3")
-    st.caption("Accents anglais - Vitesses pedagogiques - Lots - CSV")
-    language_code, slow = settings_sidebar()
-
-    simple, batch, help_tab = st.tabs(["Conversion simple", "Conversion par lot", "Aide"])
-    with simple:
-        show_single_tab(language_code, slow)
-    with batch:
-        show_batch_tab(language_code, slow)
-    with help_tab:
-        show_help_tab()
-
-
-if __name__ == "__main__":
-    main()
